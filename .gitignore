@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 output/
+models/
 debug_boxes.jpg
 debug_boxes_raw.jpg
 *.jpg
