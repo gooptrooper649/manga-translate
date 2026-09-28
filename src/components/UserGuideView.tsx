@@ -228,17 +228,17 @@ export const UserGuideView: React.FC<Props> = ({
                   Obtaining & Configuring Your Gemini API Key
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Manga Translator uses Google Gemini 2.5 Flash for high-speed comic OCR and context-aware localization.
+                  Manga Translator uses Google Gemini 3.8 Flash for high-speed comic OCR and context-aware localization.
                 </p>
               </div>
 
               <div className="space-y-4">
                 <div className="p-4 rounded-xl border border-indigo-200 dark:border-indigo-900/40 bg-indigo-50/50 dark:bg-indigo-950/20 space-y-2">
                   <span className="text-xs font-bold text-indigo-900 dark:text-indigo-300 block">
-                    Why Gemini 2.5 Flash?
+                    Why Gemini 3.8 Flash?
                   </span>
                   <p className="text-xs text-indigo-700 dark:text-indigo-200 leading-relaxed">
-                    Gemini 2.5 Flash possesses state-of-the-art multimodal vision capabilities, accurately detecting vertical Japanese text columns, stylized sound effects (onomatopoeia), and circular speech balloons in manga scans with zero preprocessing needed.
+                    Gemini 3.8 Flash possesses state-of-the-art multimodal vision capabilities, accurately detecting vertical Japanese text columns, stylized sound effects (onomatopoeia), and circular speech balloons in manga scans with zero preprocessing needed.
                   </p>
                 </div>
 
@@ -440,10 +440,10 @@ export const UserGuideView: React.FC<Props> = ({
 
                 <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1.5">
                   <span className="text-xs font-bold text-slate-900 dark:text-white block">
-                    Q: What if I hit Google API rate limits (HTTP 429)?
+                    Q: What if I hit Google API rate limits (HTTP 429) or quota errors?
                   </span>
                   <p className="text-xs text-slate-600 dark:text-slate-400">
-                    A: Manga Translator supports <strong>Multi-Key Load Balancing</strong>. You can add 2 or 3 free API keys in the <strong>API Keys</strong> tab, and the app will automatically rotate to another healthy key if one hits rate limits!
+                    A: Manga Translator features intelligent <strong>Multi-Key Automatic Rerouting</strong>. If multiple API keys are configured and one fails or hits rate limits, the system automatically reroutes across alternative healthy keys and executes multiple retry attempts with fallback models (gemini-3.8-flash and gemini-3.1-flash-lite).
                   </p>
                 </div>
 
@@ -452,7 +452,7 @@ export const UserGuideView: React.FC<Props> = ({
                     Q: Can it detect vertical Japanese text?
                   </span>
                   <p className="text-xs text-slate-600 dark:text-slate-400">
-                    A: Yes! Gemini 2.5 Flash is natively tuned for vertical top-to-bottom Japanese columns and floating onomatopoeia sound effects.
+                    A: Yes! Gemini 3.8 Flash is natively tuned for vertical top-to-bottom Japanese columns and floating onomatopoeia sound effects.
                   </p>
                 </div>
 

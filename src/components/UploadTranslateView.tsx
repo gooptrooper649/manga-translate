@@ -21,6 +21,8 @@ import {
   Cpu,
   FileText,
   Clock,
+  Trash2,
+  RotateCw,
 } from 'lucide-react';
 import JSZip from 'jszip';
 
@@ -362,10 +364,22 @@ export const UploadTranslateView: React.FC<Props> = ({
           }`
         );
 
-        setRoutingStatusMsg({
-          type: 'ok',
-          text: `✅ ${data.modelUsed || 'Gemini 3.8 Flash'} localized ${regions.length} regions (${data.tokensUsed || 300} tokens)`,
-        });
+        if (data.rerouted) {
+          addStatusLog(
+            page.filename,
+            'batch_api',
+            `🔄 Failover success: Automatically rerouted to key "${data.keyUsed}" (attempt ${data.attemptsCount}) using ${data.modelUsed}!`
+          );
+          setRoutingStatusMsg({
+            type: 'ok',
+            text: `🔄 Automatically rerouted to "${data.keyUsed}" (attempt ${data.attemptsCount}) • ${data.modelUsed} localized ${regions.length} dialogue regions`,
+          });
+        } else {
+          setRoutingStatusMsg({
+            type: 'ok',
+            text: `✅ ${data.modelUsed || 'Gemini 3.8 Flash'} localized ${regions.length} regions (${data.tokensUsed || 300} tokens)`,
+          });
+        }
 
         // Step 3: Compose Page Canvas
         setCurrentStep(`🎨 Composing translated canvas for ${page.filename}...`);
@@ -396,23 +410,13 @@ export const UploadTranslateView: React.FC<Props> = ({
         onRefreshStats();
       } catch (err: any) {
         console.warn('Translation pipeline error for', page.filename, err.message);
-        const pageNumMatch = page.filename.match(/page_0?(\d+)/i);
-        if (pageNumMatch) {
-          // If genuinely a sample page, preserve sample dialogue fallback
-          addStatusLog(
-            page.filename,
-            'done',
-            `Sample page fallback loaded for ${page.filename}.`
-          );
-        } else {
-          page.status = 'error';
-          page.errorMessage = err.message || 'Translation service unavailable. Please check your API key.';
-          addStatusLog(page.filename, 'error', `Error on ${page.filename}: ${page.errorMessage}`);
-          setRoutingStatusMsg({
-            type: 'limited',
-            text: `🔴 Translation error on ${page.filename}: ${page.errorMessage}`,
-          });
-        }
+        page.status = 'error';
+        page.errorMessage = err.message || 'Translation service unavailable. Please check your API key.';
+        addStatusLog(page.filename, 'error', `Failed after multiple attempts: ${page.errorMessage}`);
+        setRoutingStatusMsg({
+          type: 'limited',
+          text: `🔴 Translation error on ${page.filename}:\n${page.errorMessage}`,
+        });
         setPages([...updatedPages]);
       }
     }
@@ -422,6 +426,109 @@ export const UploadTranslateView: React.FC<Props> = ({
     setProgressPercent(100);
     setIsProcessing(false);
     setCurrentStep('');
+  };
+
+  // Retry a single failed or pending page with full automatic rerouting
+  const handleRetrySinglePage = async (pageId: string) => {
+    const targetIdx = pages.findIndex((p) => p.id === pageId);
+    if (targetIdx === -1 || isProcessing) return;
+
+    const updatedPages = [...pages];
+    const page: MangaPage = { ...updatedPages[targetIdx], status: 'processing', errorMessage: undefined };
+    updatedPages[targetIdx] = page;
+    setPages([...updatedPages]);
+
+    setIsProcessing(true);
+    setStatusState('running');
+    addStatusLog(page.filename, 'detect', `Retrying translation for ${page.filename} with automatic rerouting...`);
+    setRoutingStatusMsg({
+      type: 'info',
+      text: `🔄 Retrying localization on ${page.filename} across available API keys...`,
+    });
+
+    try {
+      const res = await fetch('/api/detect-and-translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: page.originalDataUrl,
+          filename: page.filename,
+          seriesContext,
+          targetLanguage,
+          annotationMode,
+          confidenceThreshold,
+          detectorBackend,
+          width: page.width,
+          height: page.height,
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP error ${res.status}`);
+      }
+
+      const data = await res.json();
+      const regions: TranslatedRegion[] = data.regions || [];
+
+      const imgElement = new Image();
+      imgElement.src = page.originalDataUrl;
+      await new Promise((r) => (imgElement.onload = r));
+
+      const translatedCanvasUrl = await composePage(imgElement, regions, {
+        annotationMode,
+        bgColor: '#ffffff',
+        textColor: '#000000',
+      });
+
+      page.status = 'completed';
+      page.regions = regions;
+      page.tokensUsed = data.tokensUsed || 300;
+      page.translatedDataUrl = translatedCanvasUrl;
+
+      if (data.rerouted) {
+        addStatusLog(
+          page.filename,
+          'done',
+          `✅ Rerouted to "${data.keyUsed}" (attempt ${data.attemptsCount}): Localized ${regions.length} dialogue regions!`
+        );
+        setRoutingStatusMsg({
+          type: 'ok',
+          text: `🔄 Rerouted to "${data.keyUsed}" (attempt ${data.attemptsCount}) • Localized ${page.filename}`,
+        });
+      } else {
+        addStatusLog(
+          page.filename,
+          'done',
+          `✅ Successfully localized ${page.filename} (${regions.length} dialogue regions)!`
+        );
+        setRoutingStatusMsg({
+          type: 'ok',
+          text: `✅ ${data.modelUsed || 'Gemini 3.8 Flash'} localized ${page.filename} (${regions.length} regions)`,
+        });
+      }
+
+      setStatusState('complete');
+      onRefreshStats();
+    } catch (err: any) {
+      console.warn('Retry error for', page.filename, err.message);
+      page.status = 'error';
+      page.errorMessage = err.message || 'Translation failed after multiple attempts.';
+      addStatusLog(page.filename, 'error', `Retry failed for ${page.filename}: ${page.errorMessage}`);
+      setRoutingStatusMsg({
+        type: 'limited',
+        text: `🔴 Translation error on ${page.filename}:\n${page.errorMessage}`,
+      });
+      setStatusState('error');
+    } finally {
+      updatedPages[targetIdx] = page;
+      setPages([...updatedPages]);
+      setIsProcessing(false);
+    }
+  };
+
+  const handleRemoveSinglePage = (pageId: string) => {
+    setPages((prev) => prev.filter((p) => p.id !== pageId));
   };
 
   const handleDownloadAllZip = async () => {
@@ -452,11 +559,11 @@ export const UploadTranslateView: React.FC<Props> = ({
     <div className="space-y-8 max-w-6xl mx-auto pb-12">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
-          <Upload className="w-8 h-8 text-indigo-400" />
+        <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white flex items-center gap-3">
+          <Upload className="w-8 h-8 text-indigo-600 dark:text-indigo-400" />
           Upload & Translate
         </h1>
-        <p className="text-slate-400 text-sm mt-1">
+        <p className="text-slate-600 dark:text-slate-400 text-sm mt-1">
           Upload manga pages or ZIP archives, detect speech balloons with specialized neural models, and localize into natural dialogue.
         </p>
       </div>
@@ -478,7 +585,7 @@ export const UploadTranslateView: React.FC<Props> = ({
             <p className="text-base font-medium text-slate-800 dark:text-slate-200">
               Drag and drop manga pages, or <span className="text-indigo-600 dark:text-indigo-400 underline">browse files</span>
             </p>
-            <p className="text-xs text-slate-500 mt-1">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
               Supports PNG, JPG, JPEG, WEBP or full ZIP archives
             </p>
           </div>
@@ -524,30 +631,145 @@ export const UploadTranslateView: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Pages Queue Bar */}
+      {/* Pages Queue Bar & Interactive Queue Grid */}
       {pages.length > 0 && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4 shadow-xs">
-          <div className="flex items-center gap-3">
-            <Layers className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
-            <div>
-              <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
-                {pages.length} page(s) loaded in workspace
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                {completedCount} translated • {pages.length - completedCount} pending
-              </p>
+        <div className="space-y-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4 shadow-xs">
+            <div className="flex items-center gap-3">
+              <Layers className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
+              <div>
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                  {pages.length} page(s) loaded in workspace
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {completedCount} translated • {pages.length - completedCount} pending
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {completedCount > 0 && (
+                <button
+                  onClick={onNavigateToReader}
+                  className="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  <Eye className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
+                  View in Manga Reader ({completedCount})
+                </button>
+              )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {completedCount > 0 && (
-              <button
-                onClick={onNavigateToReader}
-                className="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 flex items-center gap-1.5 transition cursor-pointer"
-              >
-                <Eye className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
-                View in Manga Reader ({completedCount})
-              </button>
-            )}
+
+          {/* Interactive Pages Queue Grid */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400 font-semibold px-1">
+              <span>Workspace Page Queue ({pages.length})</span>
+              <span className="text-[11px] text-slate-500">Retry button automatically reroutes across available API keys</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {pages.map((p, idx) => (
+                <div
+                  key={p.id}
+                  className={`bg-white dark:bg-slate-900 border rounded-2xl p-3 space-y-2.5 shadow-sm transition ${
+                    p.status === 'error'
+                      ? 'border-rose-300 dark:border-rose-900/60 ring-1 ring-rose-500/20'
+                      : p.status === 'completed'
+                      ? 'border-emerald-300 dark:border-emerald-900/40'
+                      : 'border-slate-200 dark:border-slate-800'
+                  }`}
+                >
+                  {/* Thumbnail Image */}
+                  <div className="relative aspect-3/4 rounded-xl overflow-hidden bg-slate-100 dark:bg-black/50 border border-slate-200 dark:border-slate-800/80 flex items-center justify-center group">
+                    <img
+                      src={p.translatedDataUrl || p.originalDataUrl}
+                      alt={p.filename}
+                      className="object-contain w-full h-full"
+                    />
+                    <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md text-[10px] font-bold bg-black/75 text-white backdrop-blur-xs font-mono">
+                      #{idx + 1}
+                    </div>
+                    {p.status === 'completed' && (
+                      <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-600/90 text-white backdrop-blur-xs flex items-center gap-1 shadow-xs">
+                        <CheckCircle2 className="w-3 h-3" /> Ready
+                      </div>
+                    )}
+                    {p.status === 'error' && (
+                      <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-600/90 text-white backdrop-blur-xs flex items-center gap-1 shadow-xs">
+                        <AlertCircle className="w-3 h-3" /> Failed
+                      </div>
+                    )}
+                    {p.status === 'processing' && (
+                      <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex flex-col items-center justify-center text-white gap-2 p-3 text-center">
+                        <RefreshCw className="w-6 h-6 animate-spin text-indigo-400" />
+                        <span className="text-[11px] font-bold">Localizing Page...</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Info & Status */}
+                  <div>
+                    <h4 className="font-bold text-xs text-slate-900 dark:text-white truncate" title={p.filename}>
+                      {p.filename}
+                    </h4>
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      <span>{p.width} × {p.height}</span>
+                      {p.status === 'completed' && (
+                        <span className="text-emerald-600 dark:text-emerald-400 font-semibold font-mono">
+                          {p.regions?.length || 0} bubbles
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Error Notice */}
+                    {p.status === 'error' && p.errorMessage && (
+                      <div
+                        className="mt-1.5 p-2 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/50 text-rose-700 dark:text-rose-300 text-[10px] font-mono leading-tight max-h-16 overflow-y-auto whitespace-pre-line"
+                        title={p.errorMessage}
+                      >
+                        {p.errorMessage}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="pt-1 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-1.5">
+                    {p.status === 'error' ? (
+                      <button
+                        onClick={() => handleRetrySinglePage(p.id)}
+                        disabled={isProcessing}
+                        className="flex-1 py-1.5 px-2.5 rounded-lg text-[11px] font-bold bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs"
+                      >
+                        <RotateCw className="w-3 h-3" /> Retry Reroute
+                      </button>
+                    ) : p.status === 'completed' ? (
+                      <button
+                        onClick={onNavigateToReader}
+                        className="flex-1 py-1.5 px-2.5 rounded-lg text-[11px] font-semibold bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-500/10 dark:hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      >
+                        <Eye className="w-3 h-3" /> Reader
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleRetrySinglePage(p.id)}
+                        disabled={isProcessing}
+                        className="flex-1 py-1.5 px-2.5 rounded-lg text-[11px] font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      >
+                        <Sparkles className="w-3 h-3 text-indigo-500" /> Localize
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => handleRemoveSinglePage(p.id)}
+                      disabled={isProcessing}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition cursor-pointer"
+                      title="Remove page"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -836,7 +1058,7 @@ export const UploadTranslateView: React.FC<Props> = ({
         {/* Live Routing Status */}
         {routingStatusMsg && (
           <div
-            className={`p-4 rounded-xl border text-xs flex items-center gap-3 ${
+            className={`p-4 rounded-xl border text-xs flex items-start gap-3 transition-colors ${
               routingStatusMsg.type === 'ok'
                 ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
                 : routingStatusMsg.type === 'limited'
@@ -845,15 +1067,15 @@ export const UploadTranslateView: React.FC<Props> = ({
             }`}
           >
             {routingStatusMsg.type === 'ok' ? (
-              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
             ) : routingStatusMsg.type === 'limited' ? (
-              <AlertCircle className="w-4 h-4 shrink-0" />
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
             ) : (
-              <Info className="w-4 h-4 shrink-0" />
+              <Info className="w-4 h-4 shrink-0 mt-0.5" />
             )}
-            <div className="font-mono">
+            <div className="font-mono flex-1 leading-relaxed">
               <span className="font-bold">📡 Status: </span>
-              {routingStatusMsg.text}
+              <span className="whitespace-pre-line font-medium">{routingStatusMsg.text}</span>
               {currentStep && <div className="text-slate-500 dark:text-slate-400 mt-1 font-sans">{currentStep}</div>}
             </div>
           </div>

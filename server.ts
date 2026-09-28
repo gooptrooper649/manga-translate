@@ -18,6 +18,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const KEY_FILE = path.join(__dirname, '.secret.key');
 const USER_CONFIG_FILE = path.join(__dirname, 'user_config.json');
+const KEYS_VAULT_FILE = path.join(__dirname, 'keys_vault.json');
 
 function getOrCreateFernetKey(): Buffer {
   if (!fs.existsSync(KEY_FILE)) {
@@ -173,27 +174,58 @@ class ServerState {
       });
     }
 
+    // Load any keys saved in the key vault
+    this.loadVaultKeys();
+
     // Add default system Gemini key if available
     const envGemini = process.env.GEMINI_API_KEY;
-    if (envGemini) {
+    if (envGemini && !this.keys.some((k) => k.apiKey === envGemini.trim())) {
       this.keys.push({
         id: 'system-gemini',
         name: 'AI Studio Gemini (Server Default)',
         provider: 'gemini',
-        apiKey: envGemini,
-        isActive: !userCfg, // If user config exists, prioritize user config
+        apiKey: envGemini.trim(),
+        isActive: true,
         createdAt: new Date().toISOString(),
       });
-    } else if (!userCfg) {
+    } else if (!userCfg && this.keys.length === 0) {
       // Demo placeholder key entry so UI is populated
       this.keys.push({
         id: 'demo-gemini',
         name: 'Gemini 3.8 Flash (Active Route)',
         provider: 'gemini',
-        apiKey: 'AIzaSyDemoKeyAutoProvidedEnvironment',
+        apiKey: 'DEMO_KEY_LOCAL_FALLBACK',
         isActive: true,
         createdAt: new Date().toISOString(),
       });
+    }
+  }
+
+  private loadVaultKeys() {
+    if (!fs.existsSync(KEYS_VAULT_FILE)) return;
+    try {
+      const raw = fs.readFileSync(KEYS_VAULT_FILE, 'utf-8');
+      const savedList: ApiKeyEntry[] = JSON.parse(raw);
+      if (Array.isArray(savedList)) {
+        for (const item of savedList) {
+          if (item.id && item.apiKey && !this.keys.some((k) => k.id === item.id || k.apiKey === item.apiKey)) {
+            this.keys.push(item);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load keys_vault.json:', e);
+    }
+  }
+
+  private saveVaultKeys() {
+    try {
+      const persistable = this.keys.filter(
+        (k) => k.id !== 'user-encrypted-key' && k.id !== 'system-gemini' && !k.id.startsWith('demo-')
+      );
+      fs.writeFileSync(KEYS_VAULT_FILE, JSON.stringify(persistable, null, 2), 'utf-8');
+    } catch (e) {
+      console.warn('Failed to save keys_vault.json:', e);
     }
   }
 
@@ -234,6 +266,7 @@ class ServerState {
       createdAt: new Date().toISOString(),
     };
     this.keys.push(entry);
+    this.saveVaultKeys();
     return entry;
   }
 
@@ -241,13 +274,72 @@ class ServerState {
     const k = this.keys.find((x) => x.id === id);
     if (!k) return false;
     k.isActive = !k.isActive;
+    this.saveVaultKeys();
     return true;
   }
 
   public removeKey(id: string): boolean {
     const prevLen = this.keys.length;
     this.keys = this.keys.filter((x) => x.id !== id);
-    return this.keys.length !== prevLen;
+    if (this.keys.length !== prevLen) {
+      this.saveVaultKeys();
+      return true;
+    }
+    return false;
+  }
+
+  public getCandidateKeys(provider: string = 'gemini'): ApiKeyEntry[] {
+    const candidates: ApiKeyEntry[] = [];
+    const seen = new Set<string>();
+
+    // 1. User config key if present and matches provider
+    const userCfg = loadEncryptedConfig();
+    if (userCfg && userCfg.provider.toLowerCase() === provider.toLowerCase() && userCfg.apiKey) {
+      candidates.push({
+        id: 'user-encrypted-key',
+        name: `User Key (${userCfg.provider})`,
+        provider: userCfg.provider.toLowerCase() as any,
+        apiKey: userCfg.apiKey.trim(),
+        isActive: true,
+        createdAt: new Date().toISOString(),
+      });
+      seen.add(userCfg.apiKey.trim());
+    }
+
+    // 2. Active keys in state
+    const now = Date.now();
+    const active = this.keys.filter((k) => k.isActive && k.provider.toLowerCase() === provider.toLowerCase());
+
+    // Sort: non-cooldowned keys first, then shortest remaining cooldown
+    const sorted = [...active].sort((a, b) => {
+      const stA = this.stats.get(a.id);
+      const stB = this.stats.get(b.id);
+      const coolA = stA?.cooldownUntil && stA.cooldownUntil > now ? stA.cooldownUntil : 0;
+      const coolB = stB?.cooldownUntil && stB.cooldownUntil > now ? stB.cooldownUntil : 0;
+      return coolA - coolB;
+    });
+
+    for (const key of sorted) {
+      if (!seen.has(key.apiKey.trim())) {
+        candidates.push(key);
+        seen.add(key.apiKey.trim());
+      }
+    }
+
+    // 3. Fallback to process.env.GEMINI_API_KEY
+    if (provider.toLowerCase() === 'gemini' && process.env.GEMINI_API_KEY && !seen.has(process.env.GEMINI_API_KEY.trim())) {
+      candidates.push({
+        id: 'system-gemini',
+        name: 'AI Studio Gemini (Server Default)',
+        provider: 'gemini',
+        apiKey: process.env.GEMINI_API_KEY.trim(),
+        isActive: true,
+        createdAt: new Date().toISOString(),
+      });
+      seen.add(process.env.GEMINI_API_KEY.trim());
+    }
+
+    return candidates;
   }
 
   public getActiveKey(provider: string = 'gemini'): ApiKeyEntry | null {
@@ -380,6 +472,47 @@ app.get('/api/auth/config', (req, res) => {
   }
 });
 
+function formatErrorMessage(err: any): string {
+  if (!err) return 'Unknown error';
+  if (typeof err === 'string') {
+    try {
+      const parsed = JSON.parse(err);
+      if (parsed.error?.message) return parsed.error.message;
+      if (parsed.message) return parsed.message;
+    } catch {
+      const match = err.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          const parsed = JSON.parse(match[0]);
+          if (parsed.error?.message) return parsed.error.message;
+          if (parsed.message) return parsed.message;
+        } catch {}
+      }
+    }
+    return err;
+  }
+  if (err.error?.message) return err.error.message;
+  if (err.message) {
+    const raw = String(err.message);
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed.error?.message) return parsed.error.message;
+      if (parsed.message) return parsed.message;
+    } catch {
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          const parsed = JSON.parse(match[0]);
+          if (parsed.error?.message) return parsed.error.message;
+          if (parsed.message) return parsed.message;
+        } catch {}
+      }
+    }
+    return raw;
+  }
+  return String(err);
+}
+
 // 2. Test Connection (Sends tiny dummy payload to Google GenAI SDK to verify key)
 app.post('/api/auth/test-connection', async (req, res) => {
   const { apiKey, provider = 'Gemini' } = req.body;
@@ -404,7 +537,7 @@ app.post('/api/auth/test-connection', async (req, res) => {
       let verified = false;
       try {
         const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.8-flash',
           contents: 'hello',
         });
         if (response && response.text) verified = true;
@@ -413,7 +546,7 @@ app.post('/api/auth/test-connection', async (req, res) => {
           // Try fallback model
           try {
             const fallbackRes = await ai.models.generateContent({
-              model: 'gemini-2.0-flash',
+              model: 'gemini-3.1-flash-lite',
               contents: 'hello',
             });
             if (fallbackRes && fallbackRes.text) verified = true;
@@ -433,7 +566,7 @@ app.post('/api/auth/test-connection', async (req, res) => {
         message: 'API Key successfully verified with Google GenAI SDK! Connection active.',
       });
     } catch (err: any) {
-      const errorMsg = err.message || String(err);
+      const errorMsg = formatErrorMessage(err);
       if (errorMsg.includes('API_KEY_INVALID') || errorMsg.includes('INVALID_ARGUMENT') || errorMsg.includes('400')) {
         return res.status(400).json({
           success: false,
@@ -489,7 +622,7 @@ app.post('/api/auth/save-config', async (req, res) => {
       });
       try {
         await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.8-flash',
           contents: 'ping',
         });
       } catch (pingErr: any) {
@@ -499,7 +632,7 @@ app.post('/api/auth/save-config', async (req, res) => {
         }
       }
     } catch (err: any) {
-      const errorMsg = err.message || String(err);
+      const errorMsg = formatErrorMessage(err);
       if (errorMsg.includes('API_KEY_INVALID') || errorMsg.includes('400')) {
         return res.status(400).json({
           success: false,
@@ -685,6 +818,137 @@ app.get('/api/bug-reports', (req, res) => {
   }
 });
 
+// ── Automatic Multi-Key Rerouting & Multi-Attempt Engine ──────────────────────
+
+interface AttemptDetail {
+  attempt: number;
+  keyName: string;
+  model: string;
+  error?: string;
+  durationMs: number;
+}
+
+interface ExecutionResult<T> {
+  data: T;
+  keyUsed: string;
+  keyId: string;
+  modelUsed: string;
+  attemptsCount: number;
+  rerouted: boolean;
+  history: AttemptDetail[];
+}
+
+async function executeWithAutoReroute<T>(
+  taskName: string,
+  provider: string,
+  runner: (ai: GoogleGenAI, model: string, keyEntry: ApiKeyEntry, attempt: number) => Promise<T>
+): Promise<ExecutionResult<T>> {
+  // Collect candidate keys, excluding demo simulator placeholders
+  const candidates = state
+    .getCandidateKeys(provider)
+    .filter((k) => !k.apiKey.includes('DEMO_KEY') && !k.apiKey.includes('DemoKey'));
+
+  if (candidates.length === 0) {
+    throw new Error('No valid Gemini API key configured. Please configure an API key in API Settings.');
+  }
+
+  // Allow multiple attempts:
+  // If multiple keys: try across available keys, then fallback model.
+  // At least 3 attempts even for a single key, up to 8 attempts for multiple keys.
+  const maxAttempts = Math.min(Math.max(candidates.length * 2, 3), 8);
+  const history: AttemptDetail[] = [];
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const keyIndex = (attempt - 1) % candidates.length;
+    const keyEntry = candidates[keyIndex];
+
+    // Model selection strategy:
+    // First pass uses gemini-3.8-flash.
+    // If a key is being retried after previous cycle, try fallback model gemini-3.1-flash-lite
+    const isRetryCycle = attempt > candidates.length;
+    const modelToUse = isRetryCycle ? 'gemini-3.1-flash-lite' : 'gemini-3.8-flash';
+
+    if (attempt > 1) {
+      const prevKey = candidates[(attempt - 2) % candidates.length];
+      const isSwitchingKey = prevKey.id !== keyEntry.id;
+      const reroutedDetail = isSwitchingKey
+        ? `Attempt ${attempt}/${maxAttempts}: Automatically rerouted from "${prevKey.name}" to candidate key "${keyEntry.name}" (${modelToUse})`
+        : `Attempt ${attempt}/${maxAttempts}: Retrying "${keyEntry.name}" with fallback model (${modelToUse})`;
+
+      state.recordFallback(
+        prevKey.name,
+        keyEntry.name,
+        reroutedDetail
+      );
+      // Brief pause between attempts (350ms)
+      await new Promise((r) => setTimeout(r, 350));
+    }
+
+    const startTime = Date.now();
+    try {
+      const ai = new GoogleGenAI({
+        apiKey: keyEntry.apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      });
+
+      const data = await runner(ai, modelToUse, keyEntry, attempt);
+      const durationMs = Date.now() - startTime;
+
+      history.push({
+        attempt,
+        keyName: keyEntry.name,
+        model: modelToUse,
+        durationMs,
+      });
+
+      return {
+        data,
+        keyUsed: keyEntry.name,
+        keyId: keyEntry.id,
+        modelUsed: modelToUse,
+        attemptsCount: attempt,
+        rerouted: attempt > 1,
+        history,
+      };
+    } catch (err: any) {
+      const durationMs = Date.now() - startTime;
+      const cleanErr = formatErrorMessage(err);
+
+      console.warn(
+        `[ROUTING ATTEMPT ${attempt}/${maxAttempts} FAILED on "${keyEntry.name}" (${modelToUse})]:`,
+        cleanErr
+      );
+
+      // Record rate limit / failure on key in state
+      state.recordRateLimit(keyEntry.name, keyEntry.id, 60);
+
+      history.push({
+        attempt,
+        keyName: keyEntry.name,
+        model: modelToUse,
+        error: cleanErr,
+        durationMs,
+      });
+    }
+  }
+
+  // All attempts exhausted! Inform user with full diagnostic breakdown
+  const errorLines = history
+    .map(
+      (h) =>
+        `• Attempt ${h.attempt} [Key: "${h.keyName}", Model: "${h.model}"]: ${h.error || 'Request failed'}`
+    )
+    .join('\n');
+
+  const detailedMessage = `Automatic rerouting exhausted all ${history.length} attempts across ${candidates.length} API key route(s):\n${errorLines}\n\nPlease check your API key quota, verify permissions, or add an active key in API Settings.`;
+
+  throw new Error(detailedMessage);
+}
+
 // Batch API Optimization: Combine all OCR strings of a single page into ONE single payload
 app.post('/api/translate-batch', async (req, res) => {
   const {
@@ -702,33 +966,7 @@ app.post('/api/translate-batch', async (req, res) => {
     return res.json({ translations: {}, tokensUsed: 0 });
   }
 
-  try {
-    const userCfg = loadEncryptedConfig();
-    const activeKey = state.getActiveKey('gemini');
-    const geminiKey =
-      (userCfg && userCfg.provider.toLowerCase() === 'gemini' ? userCfg.apiKey : null) ||
-      (activeKey ? activeKey.apiKey : null) ||
-      process.env.GEMINI_API_KEY ||
-      '';
-
-    const selectedModel = 'gemini-2.5-flash';
-
-    if (!geminiKey || geminiKey.includes('DemoKey')) {
-      const simulated: Record<string, string> = {};
-      for (const k of keys) {
-        const text = ocrDict[k] || '';
-        simulated[k] = text ? `[${targetLanguage}]: ${text}` : '';
-      }
-      state.recordSuccess('Demo Key (Local Simulator)', 'demo-key', 160, selectedModel);
-      return res.json({ translations: simulated, tokensUsed: 160 });
-    }
-
-    const ai = new GoogleGenAI({
-      apiKey: geminiKey,
-      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-    });
-
-    const prompt = `You are an expert manga localizer and translator.
+  const prompt = `You are an expert manga localizer and translator.
 Translate the following JSON dictionary of Japanese manga dialogue and sound effects into natural, emotive ${targetLanguage} that fits manga speech balloons:
 Series Context: "${seriesContext}"
 Target Language: "${targetLanguage}"
@@ -741,42 +979,46 @@ CRITICAL INSTRUCTIONS:
 2. For sound effects or floating un-bubbled onomatopoeia, format appropriately (e.g. *GASP*, *RUMBLE*).
 3. Do not include markdown fences. Output raw valid JSON.`;
 
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Translation API request timed out')), 25000)
-    );
+  // Check if any valid candidates exist
+  const candidates = state
+    .getCandidateKeys('gemini')
+    .filter((k) => !k.apiKey.includes('DEMO_KEY') && !k.apiKey.includes('DemoKey'));
 
-    const callPromise = (async () => {
-      try {
-        return await ai.models.generateContent({
-          model: selectedModel,
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json',
-            temperature: 0.2,
-          },
-        });
-      } catch (err: any) {
-        if (err?.message?.includes('RESOURCE_EXHAUSTED') || err?.message?.includes('429')) {
-          console.warn('Selected model quota reached, falling back to gemini-2.0-flash...');
+  if (candidates.length === 0) {
+    const simulated: Record<string, string> = {};
+    for (const k of keys) {
+      const text = ocrDict[k] || '';
+      simulated[k] = text ? `[${targetLanguage}]: ${text}` : '';
+    }
+    state.recordSuccess('Demo Key (Local Simulator)', 'demo-key', 160, 'gemini-3.8-flash');
+    return res.json({ translations: simulated, tokensUsed: 160, keyUsed: 'Demo Simulator' });
+  }
+
+  try {
+    const routeRes = await executeWithAutoReroute(
+      'translate-batch',
+      'gemini',
+      async (ai, model) => {
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Translation API request timed out (25s limit)')), 25000)
+        );
+
+        const callPromise = (async () => {
           return await ai.models.generateContent({
-            model: 'gemini-2.0-flash',
+            model,
             contents: prompt,
             config: {
               responseMimeType: 'application/json',
               temperature: 0.2,
             },
           });
-        }
-        throw err;
+        })();
+
+        return (await Promise.race([callPromise, timeoutPromise])) as any;
       }
-    })();
+    );
 
-    const response: any = await Promise.race([
-      callPromise,
-      timeoutPromise,
-    ]);
-
-    const raw = response.text || '{}';
+    const raw = routeRes.data.text || '{}';
     let clean = raw.trim();
     if (clean.startsWith('```json')) clean = clean.replace(/^```json/, '');
     if (clean.startsWith('```')) clean = clean.replace(/^```/, '');
@@ -799,20 +1041,18 @@ CRITICAL INSTRUCTIONS:
     }
 
     const estTokens = Math.round(clean.length / 4) + 120;
-    const keyName = userCfg ? `User Key (${userCfg.provider})` : activeKey ? activeKey.name : 'AI Studio System Key';
-    const keyId = userCfg ? 'user-encrypted-key' : activeKey ? activeKey.id : 'system-gemini';
-    state.recordSuccess(keyName, keyId, estTokens, selectedModel);
+    state.recordSuccess(routeRes.keyUsed, routeRes.keyId, estTokens, routeRes.modelUsed);
 
-    res.json({ translations, tokensUsed: estTokens });
+    res.json({
+      translations,
+      tokensUsed: estTokens,
+      keyUsed: routeRes.keyUsed,
+      attemptsCount: routeRes.attemptsCount,
+      rerouted: routeRes.rerouted,
+      modelUsed: routeRes.modelUsed,
+    });
   } catch (err: any) {
-    console.warn('Batch translation error, activating Translation Fallback Cache:', err.message);
-    const activeKey = state.getActiveKey('gemini');
-    if (activeKey) {
-      state.recordRateLimit(activeKey.name, activeKey.id, 60);
-    }
-    // Translation Fallback Cache:
-    // Save raw OCR text as [Draft: OCR Text] if the API rate-limits the user.
-    // This guarantees the user gets a readable output (even if untranslated) rather than a crashed application.
+    console.warn('Batch translation error after all routing attempts:', err.message);
     const fallback: Record<string, string> = {};
     for (const k of keys) {
       const rawText = ocrDict[k] || '';
@@ -825,7 +1065,8 @@ CRITICAL INSTRUCTIONS:
       translations: fallback,
       tokensUsed: 0,
       fallbackCache: true,
-      notice: 'API Rate limit encountered: Translation Fallback Cache activated. Saved raw OCR as [Draft: OCR Text].',
+      error: err.message,
+      notice: `Automatic rerouting exhausted: ${err.message}`,
     });
   }
 });
@@ -847,39 +1088,11 @@ app.post('/api/detect-and-translate', async (req, res) => {
     return res.status(400).json({ error: 'imageBase64 is required' });
   }
 
-  try {
+  const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+  const mimeMatch = imageBase64.match(/^data:(image\/\w+);base64,/);
+  const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
 
-    const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
-    const mimeMatch = imageBase64.match(/^data:(image\/\w+);base64,/);
-    const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
-
-    // Prioritize user config key, then active state key, then environment
-    const userCfg = loadEncryptedConfig();
-    const activeKey = state.getActiveKey('gemini');
-    const geminiKey =
-      (userCfg && userCfg.provider.toLowerCase() === 'gemini' ? userCfg.apiKey : null) ||
-      (activeKey ? activeKey.apiKey : null) ||
-      process.env.GEMINI_API_KEY ||
-      '';
-
-    const selectedModel = 'gemini-2.5-flash';
-
-    if (!geminiKey || geminiKey.includes('DemoKey')) {
-      return res.status(400).json({
-        error: 'No valid Gemini API key configured. Please add an API key in API Settings to detect and translate manga pages.',
-      });
-    }
-
-    const ai = new GoogleGenAI({
-      apiKey: geminiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-
-    const prompt = `You are an expert manga localizer and computer vision model specializing in Japanese to ${targetLanguage} manga translation.
+  const prompt = `You are an expert manga localizer and computer vision model specializing in Japanese to ${targetLanguage} manga translation.
 Analyze this manga page image and perform end-to-end Text Bubble Detection, OCR, and Localization.
 
 Series Context: "${seriesContext}"
@@ -912,39 +1125,30 @@ CRITICAL DETECTION INSTRUCTIONS:
 
 DO NOT include markdown code fences (like \`\`\`json). Output raw valid JSON.`;
 
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Translation API request timed out')), 25000)
-    );
+  try {
+    const routeRes = await executeWithAutoReroute(
+      'detect-and-translate',
+      'gemini',
+      async (ai, model) => {
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Translation vision request timed out (25s limit)')), 25000)
+        );
 
-    const visionCallPromise = (async () => {
-      const partsPayload = [
-        {
-          inlineData: {
-            mimeType,
-            data: base64Data,
+        const partsPayload = [
+          {
+            inlineData: {
+              mimeType,
+              data: base64Data,
+            },
           },
-        },
-        {
-          text: prompt,
-        },
-      ];
+          {
+            text: prompt,
+          },
+        ];
 
-      try {
-        return await ai.models.generateContent({
-          model: selectedModel,
-          contents: {
-            parts: partsPayload,
-          },
-          config: {
-            responseMimeType: 'application/json',
-            temperature: 0.2,
-          },
-        });
-      } catch (err: any) {
-        if (err?.message?.includes('RESOURCE_EXHAUSTED') || err?.message?.includes('429')) {
-          console.warn('Vision primary model quota reached, falling back to gemini-2.0-flash...');
+        const visionCallPromise = (async () => {
           return await ai.models.generateContent({
-            model: 'gemini-2.0-flash',
+            model,
             contents: {
               parts: partsPayload,
             },
@@ -953,17 +1157,13 @@ DO NOT include markdown code fences (like \`\`\`json). Output raw valid JSON.`;
               temperature: 0.2,
             },
           });
-        }
-        throw err;
+        })();
+
+        return (await Promise.race([visionCallPromise, timeoutPromise])) as any;
       }
-    })();
+    );
 
-    const response: any = await Promise.race([
-      visionCallPromise,
-      timeoutPromise,
-    ]);
-
-    const rawText = response.text || '{}';
+    const rawText = routeRes.data.text || '{}';
     let cleanJson = rawText.trim();
     if (cleanJson.startsWith('```json')) cleanJson = cleanJson.replace(/^```json/, '');
     if (cleanJson.startsWith('```')) cleanJson = cleanJson.replace(/^```/, '');
@@ -986,12 +1186,29 @@ DO NOT include markdown code fences (like \`\`\`json). Output raw valid JSON.`;
     const imgWidth = width || 1000;
     const imgHeight = height || 1400;
 
-    const rawRegions = Array.isArray(parsedResult.regions) ? parsedResult.regions : [];
+    const rawRegions = Array.isArray(parsedResult.regions)
+      ? parsedResult.regions
+      : Array.isArray(parsedResult.text_regions)
+      ? parsedResult.text_regions
+      : Array.isArray(parsedResult.bubbles)
+      ? parsedResult.bubbles
+      : Array.isArray(parsedResult.dialogues)
+      ? parsedResult.dialogues
+      : [];
+
     const formattedRegions = rawRegions.map((r: any, idx: number) => {
-      const ymin = typeof r.ymin === 'number' ? r.ymin : 0;
-      const xmin = typeof r.xmin === 'number' ? r.xmin : 0;
-      const ymax = typeof r.ymax === 'number' ? r.ymax : 100;
-      const xmax = typeof r.xmax === 'number' ? r.xmax : 100;
+      let ymin = typeof r.ymin === 'number' ? r.ymin : (Array.isArray(r.box_2d) ? r.box_2d[0] : 0);
+      let xmin = typeof r.xmin === 'number' ? r.xmin : (Array.isArray(r.box_2d) ? r.box_2d[1] : 0);
+      let ymax = typeof r.ymax === 'number' ? r.ymax : (Array.isArray(r.box_2d) ? r.box_2d[2] : 100);
+      let xmax = typeof r.xmax === 'number' ? r.xmax : (Array.isArray(r.box_2d) ? r.box_2d[3] : 100);
+
+      // If coordinates are normalized in 0..1 scale, scale up to 0..1000
+      if (ymin <= 1.0 && ymax <= 1.0 && xmin <= 1.0 && xmax <= 1.0 && (ymax > 0.01 || xmax > 0.01)) {
+        ymin = ymin * 1000;
+        xmin = xmin * 1000;
+        ymax = ymax * 1000;
+        xmax = xmax * 1000;
+      }
 
       const x0 = Math.round((xmin / 1000) * imgWidth);
       const y0 = Math.round((ymin / 1000) * imgHeight);
@@ -1007,35 +1224,32 @@ DO NOT include markdown code fences (like \`\`\`json). Output raw valid JSON.`;
           y1: Math.min(imgHeight, y1),
           category: r.category || 'standard_bubble',
         },
-        originalText: r.japanese || r.text || '',
-        translatedText: r.translation || r.english || '',
+        originalText: r.japanese || r.originalText || r.text || r.original || '',
+        translatedText: r.translation || r.translatedText || r.english || r.translated || '',
       };
     });
 
     const estTokens = Math.round(cleanJson.length / 4) + 400;
-    const keyName = userCfg ? `User Key (${userCfg.provider})` : activeKey ? activeKey.name : 'AI Studio System Key';
-    const keyId = userCfg ? 'user-encrypted-key' : activeKey ? activeKey.id : 'system-gemini';
-    state.recordSuccess(keyName, keyId, estTokens, selectedModel);
+    state.recordSuccess(routeRes.keyUsed, routeRes.keyId, estTokens, routeRes.modelUsed);
 
     res.json({
       filename,
       seriesContext: parsedResult.detected_series || seriesContext,
       targetLanguage,
       annotationMode,
-      modelUsed: selectedModel,
+      modelUsed: routeRes.modelUsed,
+      keyUsed: routeRes.keyUsed,
+      attemptsCount: routeRes.attemptsCount,
+      rerouted: routeRes.rerouted,
       regions: formattedRegions,
       tokensUsed: estTokens,
     });
   } catch (err: any) {
-    console.warn('Translation API error, activating Translation Fallback Cache:', err.message);
-    const activeKey = state.getActiveKey('gemini');
-    if (activeKey) {
-      state.recordRateLimit(activeKey.name, activeKey.id, 60);
-    }
+    const errorDetail = err.message || 'Model request failed';
+    console.warn('[TRANSLATION ERROR: ALL ATTEMPTS EXHAUSTED]:', errorDetail);
 
-    // Clean error response: Never substitute unrelated synthetic presets!
     return res.status(500).json({
-      error: `Translation service error: ${err.message || 'Model request failed'}. Please retry or check your API key in API Settings.`,
+      error: `Translation error: ${errorDetail}`,
       filename,
       retryable: true,
     });

@@ -133,39 +133,39 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated, isStandalone = fals
     <div className="max-w-2xl mx-auto py-8 space-y-6">
       {/* Header */}
       <div className="text-center space-y-2">
-        <div className="w-16 h-16 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 flex items-center justify-center mx-auto shadow-lg shadow-indigo-600/20">
+        <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 dark:bg-indigo-600/20 border border-indigo-500/20 dark:border-indigo-500/30 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mx-auto shadow-lg shadow-indigo-600/10">
           <Lock className="w-8 h-8" />
         </div>
-        <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">
+        <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
           User Onboarding & Authentication
         </h1>
-        <p className="text-slate-400 text-xs md:text-sm max-w-lg mx-auto">
+        <p className="text-slate-600 dark:text-slate-400 text-xs md:text-sm max-w-lg mx-auto">
           Configure your translation provider and securely encrypt your credentials using Fernet (AES-128-CBC) stored in{' '}
-          <code className="text-indigo-400 bg-slate-900 px-1 py-0.5 rounded">user_config.json</code>.
+          <code className="text-indigo-600 dark:text-indigo-400 bg-slate-100 dark:bg-slate-900 px-1.5 py-0.5 rounded font-mono">user_config.json</code>.
         </p>
       </div>
 
       {/* Active Config Banner if already configured */}
       {existingConfig?.isAuthenticated && existingConfig.maskedKey && (
-        <div className="bg-slate-900/90 border border-emerald-500/30 rounded-2xl p-5 space-y-4 shadow-lg">
+        <div className="bg-white dark:bg-slate-900/90 border border-emerald-500/30 rounded-2xl p-5 space-y-4 shadow-sm">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <ShieldCheck className="w-6 h-6 text-emerald-400 shrink-0" />
+              <ShieldCheck className="w-6 h-6 text-emerald-500 dark:text-emerald-400 shrink-0" />
               <div>
-                <p className="text-sm font-bold text-white">
-                  Active Configuration Detected: <span className="text-emerald-400">{existingConfig.provider}</span>
+                <p className="text-sm font-bold text-slate-900 dark:text-white">
+                  Active Configuration Detected: <span className="text-emerald-600 dark:text-emerald-400">{existingConfig.provider}</span>
                 </p>
-                <p className="text-xs text-slate-400 font-mono mt-0.5">
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-mono mt-0.5">
                   Encrypted Key: {existingConfig.maskedKey}
                 </p>
               </div>
             </div>
-            <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
               Active
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800">
+          <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-200 dark:border-slate-800">
             <button
               onClick={onAuthenticated}
               className="py-2.5 px-4 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center gap-2 transition cursor-pointer shadow-md shadow-indigo-600/20"
@@ -175,7 +175,7 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated, isStandalone = fals
             </button>
             <button
               onClick={handleLogout}
-              className="py-2.5 px-4 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-rose-300 border border-slate-700 flex items-center justify-center gap-2 transition cursor-pointer"
+              className="py-2.5 px-4 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-rose-600 dark:text-rose-300 border border-slate-200 dark:border-slate-700 flex items-center justify-center gap-2 transition cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" />
               Reset / Re-enter Key
@@ -185,35 +185,35 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated, isStandalone = fals
       )}
 
       {/* Onboarding & Key Setup Card */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 space-y-6 shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-          <h2 className="text-base font-bold text-white flex items-center gap-2">
-            <KeyRound className="w-4 h-4 text-indigo-400" />
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 md:p-8 space-y-6 shadow-sm">
+        <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4">
+          <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <KeyRound className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
             {existingConfig?.isAuthenticated ? 'Update API Key & Provider' : 'Enter API Key to Begin'}
           </h2>
-          <span className="text-[11px] text-slate-400 flex items-center gap-1 font-mono">
-            <ShieldCheck className="w-3 h-3 text-emerald-400" />
+          <span className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1 font-mono">
+            <ShieldCheck className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
             Local Fernet Encryption
           </span>
         </div>
 
-        {/* Status Alerts (st.success / st.error equivalent) */}
+        {/* Status Alerts */}
         {statusMsg && (
           <div
             className={`p-4 rounded-xl text-xs flex items-start gap-3 transition-all ${
               statusMsg.type === 'success'
-                ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300'
+                ? 'bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
                 : statusMsg.type === 'error'
-                ? 'bg-rose-500/10 border border-rose-500/30 text-rose-300'
-                : 'bg-indigo-500/10 border border-indigo-500/30 text-indigo-300'
+                ? 'bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300'
+                : 'bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/30 text-indigo-700 dark:text-indigo-300'
             }`}
           >
             {statusMsg.type === 'success' ? (
-              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-500 dark:text-emerald-400" />
             ) : statusMsg.type === 'error' ? (
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-500 dark:text-rose-400" />
             ) : (
-              <RefreshCw className="w-4 h-4 shrink-0 mt-0.5 animate-spin text-indigo-400" />
+              <RefreshCw className="w-4 h-4 shrink-0 mt-0.5 animate-spin text-indigo-600 dark:text-indigo-400" />
             )}
             <div className="flex-1 font-medium">{statusMsg.text}</div>
           </div>
@@ -222,15 +222,15 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated, isStandalone = fals
         <form onSubmit={handleSaveCredentials} className="space-y-5">
           {/* Provider Selection */}
           <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1.5">
               Provider Name
             </label>
             <select
               value={provider}
               onChange={(e) => setProvider(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition"
+              className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:border-indigo-500 transition"
             >
-              <option value="Gemini">Gemini (Recommended - Google GenAI SDK)</option>
+              <option value="Gemini">Gemini 3.8 Flash (Recommended - Google GenAI SDK)</option>
               <option value="Groq">Groq (High-speed Llama 3 translation)</option>
               <option value="OpenAI">OpenAI (GPT-4o / Compatible)</option>
               <option value="DeepSeek">DeepSeek (OpenAI-compatible)</option>
@@ -242,7 +242,7 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated, isStandalone = fals
 
           {/* API Key Input (Password field) */}
           <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1.5">
               API Key (st.text_input password type)
             </label>
             <input
@@ -250,7 +250,7 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated, isStandalone = fals
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="Paste your API key here (e.g. AIzaSy...)"
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 font-mono focus:outline-none focus:border-indigo-500 transition"
+              className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-200 font-mono focus:outline-none focus:border-indigo-500 transition"
             />
             <p className="text-[11px] text-slate-500 mt-1">
               Your key is encrypted on your machine and stored safely in user_config.json.
@@ -263,9 +263,9 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated, isStandalone = fals
               type="button"
               onClick={handleTestConnection}
               disabled={isTesting || isSaving}
-              className="py-3 px-4 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 border border-slate-700 flex items-center justify-center gap-2 transition cursor-pointer"
+              className="py-3 px-4 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-50 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 flex items-center justify-center gap-2 transition cursor-pointer"
             >
-              {isTesting ? <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" /> : <Sparkles className="w-4 h-4 text-amber-400" />}
+              {isTesting ? <RefreshCw className="w-4 h-4 animate-spin text-indigo-500 dark:text-indigo-400" /> : <Sparkles className="w-4 h-4 text-amber-500 dark:text-amber-400" />}
               <span>Test Connection</span>
             </button>
 
@@ -280,10 +280,10 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated, isStandalone = fals
           </div>
         </form>
 
-        <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3.5 text-xs text-slate-400 flex items-start gap-2.5">
-          <Info className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+        <div className="bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3.5 text-xs text-slate-600 dark:text-slate-400 flex items-start gap-2.5">
+          <Info className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
           <div className="leading-relaxed">
-            <strong className="text-slate-300">How encryption works:</strong> When you save your key, it is encrypted via Fernet (AES-128-CBC with HMAC-SHA256 integrity verification) before being written to disk. The decryption key is held securely in <code className="text-slate-300">.secret.key</code>.
+            <strong className="text-slate-800 dark:text-slate-300">How encryption works:</strong> When you save your key, it is encrypted via Fernet (AES-128-CBC with HMAC-SHA256 integrity verification) before being written to disk. The decryption key is held securely in <code className="text-slate-700 dark:text-slate-300 font-mono">.secret.key</code>.
           </div>
         </div>
       </div>

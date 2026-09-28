@@ -28,7 +28,7 @@ npm run dev
 
 ## 🌟 Key Features
 
-- **⚡ Multimodal Vision Pipeline**: Powered by `gemini-2.5-flash` for simultaneous bubble segmentation, vertical reading order sorting, and accurate translation.
+- **⚡ Multimodal Vision Pipeline**: Powered by `gemini-3.8-flash` for simultaneous bubble segmentation, vertical reading order sorting, and accurate translation.
 - **🎨 Natural Bubble Inpainting**: Clean, contour-aware erasing and comic-style typesetting (`Comic Sans MS`, `Arial Rounded MT Bold`, `Bangers`) with proportional line-wrapping.
 - **📖 Interactive Manga Reader**: Page-turning viewer, Side-by-Side comparison mode, before/after wipe slider, bubble inspector, and 1-click in-memory ZIP chapter export.
 - **🌓 Light & Dark Mode**: Fully functional theme switcher across all pages and components with persistence in `localStorage`.
