@@ -1,152 +1,156 @@
-"""Manga Reader page — gallery/reader view with individual and batch download from local output."""
+"""Manga Reader UI with seamless page flipping, Side-by-Side mode, and in-memory ZIP export."""
 from __future__ import annotations
 import io
-import os
 import zipfile
-import streamlit as st
 from pathlib import Path
+from typing import Dict, Any
 from PIL import Image
+import streamlit as st
 
-def _image_to_bytes(img: Image.Image, fmt: str = "PNG") -> bytes:
-    """Convert a PIL Image to bytes."""
-    buf = io.BytesIO()
-    img.save(buf, format=fmt)
-    return buf.getvalue()
+def bundle_volume_to_zip(pages_dict: Dict[str, Any]) -> bytes:
+    """
+    Bundles all processed PIL.Image objects in session_state into a newly created
+    .zip file in memory using Python's zipfile and io.BytesIO().
+    """
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for idx, (filename, page_data) in enumerate(pages_dict.items()):
+            img = page_data.get("image")
+            if img:
+                img_bytes_io = io.BytesIO()
+                img.save(img_bytes_io, format="PNG")
+                clean_stem = Path(filename).stem
+                archive_filename = f"{idx + 1:03d}_translated_{clean_stem}.png"
+                zf.writestr(archive_filename, img_bytes_io.getvalue())
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
 
-def render() -> None:
-    """Render the Manga Reader page."""
-    st.header('📖 Manga Reader')
+def render():
+    st.header("📖 Manga Reader & Chapter Export")
+    st.markdown("Read localized manga volumes with seamless page navigation, side-by-side comparison, and high-res chapter export.")
 
-    # Load from the backend output folder sequentially
-    output_dir = Path("output/translated")
-    image_paths = []
-    
-    if output_dir.exists():
-        for root, _, files in os.walk(output_dir):
-            for file in files:
-                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    image_paths.append(Path(root) / file)
-                    
-    image_paths.sort()
-    
-    # Also grab any session state pages not in the output directory
-    session_translated = st.session_state.get('translated_pages', {})
-    session_original = st.session_state.get('original_pages', {})
-    
-    if not image_paths and not session_translated:
-        st.info('No translated pages found. Upload and translate manga pages first!')
+    # Check for processed pages in session_state
+    if "translated_pages" not in st.session_state:
+        st.session_state["translated_pages"] = {}
+
+    pages_dict = st.session_state["translated_pages"]
+
+    # Empty State
+    if not pages_dict:
+        st.info("ℹ️ No processed manga pages found in current session. Upload and translate manga pages in the **Upload & Translate** tab to read them here.")
+        sample_dir = Path("sample_images")
+        if sample_dir.exists():
+            sample_files = sorted(list(sample_dir.glob("page_*.png")))
+            if sample_files and st.button("📂 Load Authentic Sample Pages for Viewing"):
+                loaded = {}
+                for sfile in sample_files:
+                    try:
+                        pimg = Image.open(sfile).convert("RGB")
+                        loaded[sfile.name] = {
+                            "filename": sfile.name,
+                            "image": pimg,
+                            "original_image": pimg,
+                            "regions": []
+                        }
+                    except Exception as err:
+                        st.warning(f"Could not load {sfile.name}: {err}")
+                st.session_state["translated_pages"] = loaded
+                st.session_state["reader_page_index"] = 0
+                st.success(f"Loaded {len(loaded)} sample pages.")
+                st.rerun()
         return
 
-    # Combine file paths and session state images
-    # For simplicity in reader, we will just use file paths if available.
-    # But to support the in-memory upload flow without breaking it, we merge them.
-    # We will prioritize file paths.
-    all_items = []
-    for p in image_paths:
-        all_items.append({"name": p.name, "path": p, "img": None})
-        
-    for name, img in session_translated.items():
-        if not any(item["name"] == name for item in all_items):
-            all_items.append({"name": name, "path": None, "img": img})
+    page_names = list(pages_dict.keys())
+    total_pages = len(page_names)
 
-    if 'reader_page_index' not in st.session_state:
-        st.session_state.reader_page_index = 0
+    # Initialize current reader index in session state
+    if "reader_page_index" not in st.session_state:
+        st.session_state["reader_page_index"] = 0
 
-    view_mode = st.radio('View', ['Gallery', 'Reader'], horizontal=True)
+    # Ensure index bounds
+    st.session_state["reader_page_index"] = max(0, min(st.session_state["reader_page_index"], total_pages - 1))
+    curr_idx = st.session_state["reader_page_index"]
+    curr_page_name = page_names[curr_idx]
+    curr_page_data = pages_dict[curr_page_name]
 
-    # Helper to load image
-    def load_image(item):
-        if item["img"] is not None:
-            return item["img"]
-        return Image.open(item["path"]).convert("RGB")
+    # Reader Top Navigation Controls Bar
+    st.markdown("---")
+    col_prev, col_info, col_next = st.columns([1, 2, 1])
 
-    # ── Gallery Mode ─────────────────────────────────────────────────────
-    if view_mode == 'Gallery':
-        cols_per_row = 4
-        for row_start in range(0, len(all_items), cols_per_row):
-            row_items = all_items[row_start : row_start + cols_per_row]
-            cols = st.columns(len(row_items))
-            for col, item in zip(cols, row_items):
-                with col:
-                    img = load_image(item)
-                    st.image(img, caption=item["name"], use_container_width=True)
-                    
-                    # Dedicated download button next to each individual image
-                    btn_cols = st.columns(2)
-                    with btn_cols[0]:
-                        if st.button("📖 Read", key=f"read_{item['name']}"):
-                            st.session_state.reader_page_index = all_items.index(item)
-                            st.rerun()
-                    with btn_cols[1]:
-                        st.download_button(
-                            label="⬇️ DL",
-                            data=_image_to_bytes(img),
-                            file_name=f"translated_{item['name']}",
-                            mime="image/png",
-                            key=f"dl_{item['name']}"
-                        )
+    with col_prev:
+        prev_disabled = (curr_idx == 0)
+        if st.button("◀ Previous Page", disabled=prev_disabled, use_container_width=True):
+            st.session_state["reader_page_index"] -= 1
+            st.rerun()
 
-    # ── Reader Mode ──────────────────────────────────────────────────────
-    else:
-        idx = st.session_state.reader_page_index
-        if idx >= len(all_items):
-            idx = 0
-            st.session_state.reader_page_index = 0
+    with col_info:
+        selected_idx = st.selectbox(
+            "Jump to Page",
+            options=range(total_pages),
+            format_func=lambda i: f"Page {i + 1} / {total_pages} ({page_names[i]})",
+            index=curr_idx,
+            label_visibility="collapsed",
+        )
+        if selected_idx != curr_idx:
+            st.session_state["reader_page_index"] = selected_idx
+            st.rerun()
 
-        item = all_items[idx]
-        img = load_image(item)
-        filename = item["name"]
+    with col_next:
+        next_disabled = (curr_idx == total_pages - 1)
+        if st.button("Next Page ▶", disabled=next_disabled, use_container_width=True):
+            st.session_state["reader_page_index"] += 1
+            st.rerun()
 
-        # Navigation
-        nav1, nav2, nav3 = st.columns([1, 2, 1])
-        with nav1:
-            if st.button('⬅️ Prev', disabled=(idx == 0), use_container_width=True):
-                st.session_state.reader_page_index -= 1
-                st.rerun()
-        with nav2:
-            st.markdown(
-                f"<h4 style='text-align: center'>Page {idx + 1} of {len(all_items)}</h4>",
-                unsafe_allow_html=True,
-            )
-        with nav3:
-            if st.button('Next ➡️', disabled=(idx == len(all_items) - 1), use_container_width=True):
-                st.session_state.reader_page_index += 1
-                st.rerun()
+    st.markdown(f"**Current Page:** `{curr_page_name}` (Page {curr_idx + 1} of {total_pages})")
 
-        # Original/Translated toggle
-        show_original = st.toggle('Show Original', key='show_original')
-        display_img = session_original.get(filename, img) if show_original else img
-        st.image(display_img, use_container_width=True, caption=f"{'Original' if show_original else 'Translated'} — {filename}")
+    # View Mode Options
+    col_mode, col_export = st.columns([2, 1])
+    with col_mode:
+        side_by_side = st.checkbox("Side-by-Side Comparison (Original vs Translated)", value=False)
+        show_original_only = st.checkbox("Show Original Scan Only", value=False)
 
-        # Dedicated download button next to individual image
+    with col_export:
+        zip_bytes = bundle_volume_to_zip(pages_dict)
         st.download_button(
-            label=f"⬇️ Download This Page",
-            data=_image_to_bytes(display_img),
-            file_name=f"{'orig' if show_original else 'translated'}_{filename}",
-            mime="image/png",
+            label="📦 Download Complete Volume (.zip)",
+            data=zip_bytes,
+            file_name="localized_manga_volume.zip",
+            mime="application/zip",
+            use_container_width=True,
+            type="primary",
         )
 
-    # ── Batch Download Section ───────────────────────────────────────────
-    st.divider()
-    st.subheader('📦 Download All')
+    # Render Active Page
+    st.markdown("---")
+    orig_img = curr_page_data.get("original_image")
+    trans_img = curr_page_data.get("image")
 
-    zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for item in all_items:
-            img = load_image(item)
-            # If path exists, use its relative path for the zip structure
-            if item["path"]:
-                rel_path = item["path"].relative_to(output_dir)
-                zf.writestr(str(rel_path), _image_to_bytes(img))
-            else:
-                zf.writestr(f"translated_{item['name']}", _image_to_bytes(img))
+    if side_by_side and orig_img and trans_img:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("Original Japanese Scan")
+            st.image(orig_img, use_container_width=True)
+        with c2:
+            st.caption("Localized & Typeset Scan")
+            st.image(trans_img, use_container_width=True)
+    elif show_original_only and orig_img:
+        st.caption("Original Japanese Scan")
+        st.image(orig_img, use_container_width=True)
+    elif trans_img:
+        st.caption("Localized & Typeset Scan")
+        st.image(trans_img, use_container_width=True)
+    elif orig_img:
+        st.caption("Original Japanese Scan")
+        st.image(orig_img, use_container_width=True)
+    else:
+        st.warning("No image data available for this page.")
 
-    st.download_button(
-        label='📦 Download All Translated Pages (ZIP)',
-        data=zip_buf.getvalue(),
-        file_name='manga_translated_batch.zip',
-        mime='application/zip',
-        use_container_width=True,
-    )
-
-render()
+    # Dialogue transcript / inspector
+    regions = curr_page_data.get("regions", [])
+    if regions:
+        with st.expander(f"💬 Detected Dialogue & Translations ({len(regions)} bubbles)", expanded=False):
+            for r in regions:
+                st.markdown(f"**Bubble #{r.get('id', 0) + 1}**")
+                st.text(f"JP: {r.get('japanese', '')}")
+                st.text(f"EN: {r.get('translation', '')}")
+                st.markdown("---")

@@ -1,0 +1,17 @@
+[
+  {
+    "id": "bug_1790605119235_ex2at",
+    "timestamp": "2026-09-28T14:18:39.235Z",
+    "recipient": "studyaccformeonly@gmail.com",
+    "title": "Test Bug Report",
+    "description": "Test issue description with image attachment",
+    "userEmail": "tester@example.com",
+    "hasImage": true,
+    "imageDataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "systemInfo": {
+      "browser": "Chrome",
+      "os": "Linux"
+    },
+    "logs": []
+  }
+]

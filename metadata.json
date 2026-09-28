@@ -1,0 +1,7 @@
+{
+  "name": "Manga Translator",
+  "description": "AI-powered manga localization workstation with text bubble detection, OCR, natural dialogue translation, interactive reader, and live token routing tracker.",
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
